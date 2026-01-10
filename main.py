@@ -17,7 +17,6 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
         os.makedirs(output_dir)
 
     all_data = []
-    # 経過時間の基準となるJST時刻
     jst = timezone(timedelta(hours=+9), 'JST')
     now_jst = datetime.now(jst)
 
@@ -51,19 +50,19 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
     if all_data:
         df = pd.DataFrame(all_data)
 
-        # --- ここで列の順番を強制的に指定する ---
+        # --- 指定された順番で列を固定 ---
         column_order = [
             "質問日時", 
-            "経過時間",   # 2列目
             "カテゴリ", 
             "投稿者名", 
+            "経過時間",   # 4列目
             "回答数", 
             "閲覧数", 
+            "注目度",     # 閲覧数 ÷ 経過時間
             "受付終了まで", 
             "URL", 
-            "本文冒頭"    # 最後
+            "本文冒頭"
         ]
-        # 存在する列のみで並び替え（エラー防止）
         df = df.reindex(columns=[c for c in column_order if c in df.columns])
         
         now_str = now_jst.strftime("%Y%m%d_%H%M%S")
@@ -72,7 +71,7 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
         
         df.to_csv(file_path, index=False, encoding="utf-8-sig")
         print(f"\n--- 完了 ---")
-        print(f"経過時間を2列目に配置しました。")
+        print(f"数値データを4〜7列目に集約し、注目度を算出しました。")
         print(f"保存先: {file_path}")
     else:
         print("データが取得できませんでした。")
@@ -82,7 +81,7 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.content, "html.parser")
 
-        # 1. 本文冒頭
+        # 本文
         content_tag = soup.select_one('h1[class*="ClapLv1TextBlock_Chie-TextBlock__Text__"]')
         if content_tag:
             raw_text = content_tag.get_text(" ", strip=True)
@@ -91,46 +90,50 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         else:
             summary = ""
 
-        # 各タグの取得
         cat_tag = soup.select_one('a[class*="ClapLv2QuestionItem_Chie-QuestionItem__SubAnchor__"]')
         user_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__UserName__"]')
         date_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__Date__"]')
         ans_tag = soup.select_one('strong[class*="ClapLv2QuestionItem_Chie-QuestionItem__AnswerNumber__"]')
         limit_tag = soup.select_one('p[class*="ClapLv2QuestionItem_Chie-QuestionItem__DeadlineText__"]')
         
-        # 経過時間の計算
-        post_date_str = date_tag.get_text(strip=True) if date_tag else ""
-        elapsed_time = ""
-        if post_date_str:
-            try:
-                # 投稿日時を変換
-                post_dt = datetime.strptime(post_date_str, "%Y/%m/%d %H:%M")
-                post_dt = post_dt.replace(tzinfo=timezone(timedelta(hours=+9)))
-                
-                diff = now_jst - post_dt
-                d = diff.days
-                h, rem = divmod(diff.seconds, 3600)
-                m, _ = divmod(rem, 60)
-                elapsed_time = f"{d}日{h}時間{m}分" if d > 0 else f"{h}時間{m}分"
-            except:
-                elapsed_time = "計算不可"
-
-        # 閲覧数
+        # 閲覧数の取得
         view_count = 0
         sub_info_tag = soup.select_one('p[class*="ClapLv1TextBlock_Chie-TextBlock__Text--colorGray__"]')
         if sub_info_tag:
-            text = sub_info_tag.get_text(strip=True)
-            match = re.search(r'([\d,]+)閲覧', text)
-            if match:
-                view_count = int(match.group(1).replace(',', ''))
+            match = re.search(r'([\d,]+)閲覧', sub_info_tag.get_text())
+            if match: view_count = int(match.group(1).replace(',', ''))
+
+        # 経過時間と注目度の計算
+        post_date_str = date_tag.get_text(strip=True) if date_tag else ""
+        elapsed_text = ""
+        popularity_score = 0.0
+        
+        if post_date_str:
+            try:
+                post_dt = datetime.strptime(post_date_str, "%Y/%m/%d %H:%M").replace(tzinfo=timezone(timedelta(hours=+9)))
+                diff = now_jst - post_dt
+                total_minutes = diff.total_seconds() / 60
+                
+                # 経過時間のテキスト整形
+                d = diff.days
+                h, rem = divmod(diff.seconds, 3600)
+                m, _ = divmod(rem, 60)
+                elapsed_text = f"{d}日{h}時間{m}分" if d > 0 else f"{h}時間{m}分"
+                
+                # 注目度計算 (1分あたりの閲覧数)
+                if total_minutes > 0:
+                    popularity_score = round(view_count / total_minutes, 2)
+            except:
+                elapsed_text = "計算エラー"
 
         return {
             "質問日時": post_date_str,
-            "経過時間": elapsed_time,
             "カテゴリ": cat_tag.get_text(strip=True) if cat_tag else "未分類",
             "投稿者名": user_tag.get_text(strip=True).replace("さん", "") if user_tag else "匿名",
+            "経過時間": elapsed_text,
             "回答数": int(ans_tag.get_text(strip=True)) if ans_tag else 0,
             "閲覧数": view_count,
+            "注目度": popularity_score,
             "受付終了まで": limit_tag.get_text(strip=True).replace("回答受付終了まで", "") if limit_tag else "不明",
             "URL": url,
             "本文冒頭": summary
