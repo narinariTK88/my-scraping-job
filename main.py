@@ -17,7 +17,7 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
         os.makedirs(output_dir)
 
     all_data = []
-    # 経過時間の計算用に現在のJST時刻を取得
+    # 経過時間の基準となるJST時刻
     jst = timezone(timedelta(hours=+9), 'JST')
     now_jst = datetime.now(jst)
 
@@ -50,13 +50,30 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
 
     if all_data:
         df = pd.DataFrame(all_data)
+
+        # --- ここで列の順番を強制的に指定する ---
+        column_order = [
+            "質問日時", 
+            "経過時間",   # 2列目
+            "カテゴリ", 
+            "投稿者名", 
+            "回答数", 
+            "閲覧数", 
+            "受付終了まで", 
+            "URL", 
+            "本文冒頭"    # 最後
+        ]
+        # 存在する列のみで並び替え（エラー防止）
+        df = df.reindex(columns=[c for c in column_order if c in df.columns])
+        
         now_str = now_jst.strftime("%Y%m%d_%H%M%S")
         file_name = f"chiebukuro_{now_str}_{max_pages}pages.csv"
         file_path = os.path.join(output_dir, file_name)
+        
         df.to_csv(file_path, index=False, encoding="utf-8-sig")
         print(f"\n--- 完了 ---")
+        print(f"経過時間を2列目に配置しました。")
         print(f"保存先: {file_path}")
-        print(f"取得件数: {len(all_data)} 件")
     else:
         print("データが取得できませんでした。")
 
@@ -74,34 +91,29 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         else:
             summary = ""
 
-        # 各種項目
+        # 各タグの取得
         cat_tag = soup.select_one('a[class*="ClapLv2QuestionItem_Chie-QuestionItem__SubAnchor__"]')
         user_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__UserName__"]')
         date_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__Date__"]')
         ans_tag = soup.select_one('strong[class*="ClapLv2QuestionItem_Chie-QuestionItem__AnswerNumber__"]')
         limit_tag = soup.select_one('p[class*="ClapLv2QuestionItem_Chie-QuestionItem__DeadlineText__"]')
         
-        # --- 経過時間の計算ロジック ---
+        # 経過時間の計算
         post_date_str = date_tag.get_text(strip=True) if date_tag else ""
         elapsed_time = ""
         if post_date_str:
             try:
-                # 文字列 "2026/1/8 14:53" を datetimeオブジェクトに変換
-                post_date_dt = datetime.strptime(post_date_str, "%Y/%m/%d %H:%M")
-                # タイムゾーン情報を付与（JSTとして扱う）
-                post_date_dt = post_date_dt.replace(tzinfo=timezone(timedelta(hours=+9)))
+                # 投稿日時を変換
+                post_dt = datetime.strptime(post_date_str, "%Y/%m/%d %H:%M")
+                post_dt = post_dt.replace(tzinfo=timezone(timedelta(hours=+9)))
                 
-                diff = now_jst - post_date_dt
-                days = diff.days
-                hours, remainder = divmod(diff.seconds, 3600)
-                minutes, _ = divmod(remainder, 60)
-                
-                if days > 0:
-                    elapsed_time = f"{days}日 {hours}時間{minutes}分"
-                else:
-                    elapsed_time = f"{hours}時間{minutes}分"
+                diff = now_jst - post_dt
+                d = diff.days
+                h, rem = divmod(diff.seconds, 3600)
+                m, _ = divmod(rem, 60)
+                elapsed_time = f"{d}日{h}時間{m}分" if d > 0 else f"{h}時間{m}分"
             except:
-                elapsed_time = "計算エラー"
+                elapsed_time = "計算不可"
 
         # 閲覧数
         view_count = 0
@@ -114,10 +126,10 @@ def parse_detail_page(url, headers, summary_len, now_jst):
 
         return {
             "質問日時": post_date_str,
-            "経過時間": elapsed_time,  # 2列目に配置
+            "経過時間": elapsed_time,
             "カテゴリ": cat_tag.get_text(strip=True) if cat_tag else "未分類",
             "投稿者名": user_tag.get_text(strip=True).replace("さん", "") if user_tag else "匿名",
-            "回答数": int(ans_count.get_text(strip=True)) if ans_tag else 0,
+            "回答数": int(ans_tag.get_text(strip=True)) if ans_tag else 0,
             "閲覧数": view_count,
             "受付終了まで": limit_tag.get_text(strip=True).replace("回答受付終了まで", "") if limit_tag else "不明",
             "URL": url,
