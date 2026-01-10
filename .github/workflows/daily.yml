@@ -1,0 +1,33 @@
+name: Chiebukuro-Scraper
+
+on:
+  schedule:
+    - cron: '16 16 * * *' # 日本時間の朝01時に毎日実行
+  workflow_dispatch:      # 手動実行ボタンを出す
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリを読み込む
+        uses: actions/checkout@v3
+
+      - name: Pythonのセットアップ
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 必要なライブラリをインストール
+        run: |
+          pip install requests beautifulsoup4 pandas lxml
+
+      - name: スクレイピングを実行
+        run: python 自分のファイル名.py  # アップロードしたファイル名に変えてください
+
+      - name: 結果を保存
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add results.csv
+          git commit -m "Update scraped data" || echo "No changes to commit"
+          git push
