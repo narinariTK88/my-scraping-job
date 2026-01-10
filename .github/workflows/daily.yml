@@ -22,7 +22,7 @@ jobs:
           pip install requests beautifulsoup4 pandas lxml
 
       - name: スクレイピングを実行
-        run: python 自分のファイル名.py  # アップロードしたファイル名に変えてください
+        run: python main.py  # アップロードしたファイル名に変えてください
 
       - name: 結果を保存
         run: |
