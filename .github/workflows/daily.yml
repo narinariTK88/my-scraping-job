@@ -2,7 +2,7 @@ name: Chiebukuro-Scraper
 
 on:
   schedule:
-    - cron: '16 16 * * *' # 日本時間の朝01時に毎日実行
+    - cron: '16 15 * * *' # 日本時間の朝01時に毎日実行
   workflow_dispatch:      # 手動実行ボタンを出す
 
 jobs:
