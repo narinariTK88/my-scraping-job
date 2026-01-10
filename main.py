@@ -4,15 +4,22 @@ import pandas as pd
 import time
 import re
 import os
+import random  # ランダム待機用に追加
 from datetime import datetime, timedelta, timezone
 
 def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=50):
+    """
+    ヤフー知恵袋をスクレイピングする
+    :param max_pages: 取得ページ数
+    :param output_dir: 保存先フォルダ
+    :param margin_sec: 基本待機(1s)に加算する固定秒数
+    :param summary_len: 本文を取得する文字数
+    """
     base_list_url = "https://chiebukuro.yahoo.co.jp/question/list?flg=0&fr=common-navi"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
-    wait_time = 1.0 + margin_sec
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -27,6 +34,7 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
             res.raise_for_status()
             soup = BeautifulSoup(res.content, "html.parser")
             
+            # 詳細URLのリストを取得
             links = soup.find_all('a', href=re.compile(r'https://detail.chiebukuro.yahoo.co.jp/qa/question_detail/q\d+'))
             target_urls = list(dict.fromkeys([l.get('href') for l in links]))
 
@@ -36,7 +44,13 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
                 if detail_data:
                     all_data.append(detail_data)
                 
-                time.sleep(wait_time)
+                # --- 待機時間の計算 ---
+                # 1.0秒(最低保証) + margin_sec(設定値) + 0〜3.0秒(ランダムな揺らぎ)
+                rand_wait = random.uniform(0, 3.0)
+                total_wait = 1.0 + margin_sec + rand_wait
+                
+                print(f"    (待機中: {total_wait:.2f}秒)")
+                time.sleep(total_wait)
 
         except Exception as e:
             print(f"エラー発生: {e}")
@@ -45,28 +59,31 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
     if all_data:
         df = pd.DataFrame(all_data)
         
-        # JSTでファイル名生成
+        # JST(日本標準時)でファイル名生成
         jst = timezone(timedelta(hours=+9), 'JST')
         now_str = datetime.now(jst).strftime("%Y%m%d_%H%M%S")
         
-        file_path = os.path.join(output_dir, f"chiebukuro_{now_str}_{max_pages}pages.csv")
+        file_name = f"chiebukuro_{now_str}_{max_pages}pages.csv"
+        file_path = os.path.join(output_dir, file_name)
+        
+        # Excelで見やすいようBOM付きUTF-8で出力
         df.to_csv(file_path, index=False, encoding="utf-8-sig")
         print(f"\n--- 完了 ---")
-        print(f"設定: {summary_len}文字(改行除去済), JST時刻保存")
         print(f"保存先: {file_path}")
+        print(f"取得件数: {len(all_data)} 件")
     else:
         print("データが取得できませんでした。")
 
 def parse_detail_page(url, headers, summary_len):
     try:
-        res = requests.get(url, headers=headers)
+        res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.content, "html.parser")
 
         # 1. 本文冒頭 (改行をスペースに置換)
         content_tag = soup.select_one('h1[class*="ClapLv1TextBlock_Chie-TextBlock__Text__"]')
         if content_tag:
             raw_text = content_tag.get_text(" ", strip=True)
-            # 改行と連続スペースを除去
+            # 改行と連続スペースを1つのスペースに集約
             clean_text = re.sub(r'[\r\n\s]+', ' ', raw_text)
             summary = (clean_text[:summary_len] + '...') if len(clean_text) > summary_len else clean_text
         else:
@@ -88,7 +105,7 @@ def parse_detail_page(url, headers, summary_len):
         ans_tag = soup.select_one('strong[class*="ClapLv2QuestionItem_Chie-QuestionItem__AnswerNumber__"]')
         ans_count = ans_tag.get_text(strip=True) if ans_tag else "0"
         
-        # 6. 閲覧数
+        # 6. 閲覧数 (カンマ・正規表現対応)
         view_count = 0
         sub_info_tag = soup.select_one('p[class*="ClapLv1TextBlock_Chie-TextBlock__Text--colorGray__"]')
         if sub_info_tag:
@@ -115,4 +132,5 @@ def parse_detail_page(url, headers, summary_len):
         return None
 
 if __name__ == "__main__":
-    scrape_chiebukuro(max_pages=2, output_dir="./scraped_data", margin_sec=0.5, summary_len=50)
+    # 使用例: 2ページ分取得、マージン0.5秒、本文50文字
+    scrape_chiebukuro(max_pages=2, output_dir="./", margin_sec=0.5, summary_len=50)
