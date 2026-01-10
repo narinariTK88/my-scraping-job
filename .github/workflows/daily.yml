@@ -28,6 +28,6 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add results.csv
+          git add *.csv
           git commit -m "Update scraped data" || echo "No changes to commit"
           git push
