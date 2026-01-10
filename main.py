@@ -55,10 +55,11 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
             "質問日時", 
             "カテゴリ", 
             "投稿者名", 
-            "経過時間",   # 4列目
+            "経過時間", 
             "回答数", 
             "閲覧数", 
-            "注目度",     # 閲覧数 ÷ 経過時間
+            "注目度",       # 閲覧数 ÷ 経過時間
+            "回答競争率",   # 回答数 ÷ 閲覧数 (%)
             "受付終了まで", 
             "URL", 
             "本文冒頭"
@@ -71,7 +72,7 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
         
         df.to_csv(file_path, index=False, encoding="utf-8-sig")
         print(f"\n--- 完了 ---")
-        print(f"数値データを4〜7列目に集約し、注目度を算出しました。")
+        print(f"数値データと2つの指数（注目度・回答競争率）をまとめました。")
         print(f"保存先: {file_path}")
     else:
         print("データが取得できませんでした。")
@@ -81,7 +82,7 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.content, "html.parser")
 
-        # 本文
+        # 本文取得
         content_tag = soup.select_one('h1[class*="ClapLv1TextBlock_Chie-TextBlock__Text__"]')
         if content_tag:
             raw_text = content_tag.get_text(" ", strip=True)
@@ -96,44 +97,50 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         ans_tag = soup.select_one('strong[class*="ClapLv2QuestionItem_Chie-QuestionItem__AnswerNumber__"]')
         limit_tag = soup.select_one('p[class*="ClapLv2QuestionItem_Chie-QuestionItem__DeadlineText__"]')
         
-        # 閲覧数の取得
+        # 回答数・閲覧数
+        ans_count = int(ans_tag.get_text(strip=True)) if ans_tag else 0
         view_count = 0
         sub_info_tag = soup.select_one('p[class*="ClapLv1TextBlock_Chie-TextBlock__Text--colorGray__"]')
         if sub_info_tag:
             match = re.search(r'([\d,]+)閲覧', sub_info_tag.get_text())
             if match: view_count = int(match.group(1).replace(',', ''))
 
-        # 経過時間と注目度の計算
+        # 各種指数の計算
         post_date_str = date_tag.get_text(strip=True) if date_tag else ""
         elapsed_text = ""
-        popularity_score = 0.0
+        popularity_score = 0.0  # 注目度
+        answer_ratio = 0.0      # 回答競争率
         
         if post_date_str:
             try:
+                # 経過時間と注目度の計算
                 post_dt = datetime.strptime(post_date_str, "%Y/%m/%d %H:%M").replace(tzinfo=timezone(timedelta(hours=+9)))
                 diff = now_jst - post_dt
                 total_minutes = diff.total_seconds() / 60
                 
-                # 経過時間のテキスト整形
                 d = diff.days
                 h, rem = divmod(diff.seconds, 3600)
                 m, _ = divmod(rem, 60)
                 elapsed_text = f"{d}日{h}時間{m}分" if d > 0 else f"{h}時間{m}分"
                 
-                # 注目度計算 (1分あたりの閲覧数)
                 if total_minutes > 0:
-                    popularity_score = round(view_count / total_minutes, 2)
+                    popularity_score = round(view_count / total_minutes, 3) # 細かく小数点3位まで
             except:
                 elapsed_text = "計算エラー"
+
+        # 回答競争率の計算 (閲覧数に対する回答数の割合 %)
+        if view_count > 0:
+            answer_ratio = round((ans_count / view_count) * 100, 2)
 
         return {
             "質問日時": post_date_str,
             "カテゴリ": cat_tag.get_text(strip=True) if cat_tag else "未分類",
             "投稿者名": user_tag.get_text(strip=True).replace("さん", "") if user_tag else "匿名",
             "経過時間": elapsed_text,
-            "回答数": int(ans_tag.get_text(strip=True)) if ans_tag else 0,
+            "回答数": ans_count,
             "閲覧数": view_count,
             "注目度": popularity_score,
+            "回答競争率": answer_ratio,
             "受付終了まで": limit_tag.get_text(strip=True).replace("回答受付終了まで", "") if limit_tag else "不明",
             "URL": url,
             "本文冒頭": summary
@@ -142,4 +149,4 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         return None
 
 if __name__ == "__main__":
-    scrape_chiebukuro(max_pages=2, output_dir="./", margin_sec=0.5, summary_len=50)
+    scrape_chiebukuro(max_pages=5, output_dir="./", margin_sec=0.5, summary_len=50)
