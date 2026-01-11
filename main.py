@@ -37,8 +37,7 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
                 if url not in page_urls: page_urls.append(url)
 
             for i, detail_url in enumerate(page_urls):
-                if detail_url in seen_urls:
-                    continue
+                if detail_url in seen_urls: continue
                 
                 print(f"  [{i+1}/{len(page_urls)}] 解析中...")
                 detail_data = parse_detail_page(detail_url, headers, summary_len, now_jst)
@@ -55,6 +54,7 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
 
     if all_data:
         df = pd.DataFrame(all_data)
+        # 指定された列順に整理
         column_order = [
             "質問日時", "カテゴリ", "投稿者名", "経過時間", 
             "回答数", "閲覧数", "共感数", "回答リアクション総数",
@@ -76,12 +76,11 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.content, "html.parser")
 
-        # --- 1. 本文冒頭（改行と余計な空白を徹底除去） ---
+        # 1. 本文冒頭（改行徹底除去）
         content_tag = soup.select_one('h1[class*="ClapLv1TextBlock_Chie-TextBlock__Text__"]')
         summary = ""
         if content_tag:
             raw_text = content_tag.get_text(" ", strip=True)
-            # 全ての改行、タブ、連続した空白をスペース1つに置換
             clean_text = re.sub(r'[\r\n\t\s]+', ' ', raw_text).strip()
             summary = (clean_text[:summary_len] + '...') if len(clean_text) > summary_len else clean_text
 
@@ -93,47 +92,65 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         
         ans_count = int(ans_tag.get_text(strip=True)) if ans_tag else 0
         
-        # --- 2. 閲覧数・共感数の取得 ---
+        # 2. 閲覧数
         view_count = 0
-        empathy_count = 0
         sub_info_tags = soup.select('p[class*="ClapLv1TextBlock_Chie-TextBlock__Text--colorGray__"]')
         for tag in sub_info_tags:
             text = tag.get_text()
             if "閲覧" in text:
                 match = re.search(r'([\d,]+)', text)
                 if match: view_count = int(match.group(1).replace(',', ''))
-            if "共感した" in text:
-                match = re.search(r'([\d,]+)', text)
-                if match: empathy_count = int(match.group(1).replace(',', ''))
 
-        # --- 3. 回答リアクション総数の集計 ---
+        # 3. 共感数 (質問への「共感した」ボタンの数値)
+        empathy_count = 0
+        # 「共感した」というテキストを持つ要素を探す
+        empathy_element = soup.find(lambda tag: tag.name in ["div", "p", "button"] and "共感した" in tag.get_text())
+        if empathy_element:
+            # 構造上、同じ親要素内のテキストから数字を探す
+            parent_text = empathy_element.parent.get_text()
+            match = re.search(r'共感した([\d,]+)', parent_text.replace(' ', ''))
+            if match:
+                empathy_count = int(match.group(1).replace(',', ''))
+            else:
+                # テキストに含まれない場合、隣接する要素から数字を抽出
+                num_part = re.search(r'([\d,]+)', empathy_element.get_text())
+                if num_part: empathy_count = int(num_part.group(1).replace(',', ''))
+
+        # 4. 回答リアクション総数 (「なるほど」「そうだね」「ありがとう」の合計)
         reaction_total = 0
-        reactions = soup.select('span[class*="ClapLv2ReactionIcon_Chie-ReactionIcon__Count__"]')
-        for r in reactions:
-            try:
-                val = int(r.get_text(strip=True).replace(',', ''))
-                reaction_total += val
-            except: continue
+        reaction_labels = ["なるほど", "そうだね", "ありがとう"]
+        # ラベルを探して、その次の要素（Countクラス）から数値を取る
+        for label in reaction_labels:
+            label_tags = soup.find_all(lambda tag: tag.name == "p" and label in tag.get_text())
+            for lt in label_tags:
+                # Countクラスを持つ兄弟要素を探す
+                count_tag = lt.find_next_sibling(lambda tag: tag.name == "p" and "Count" in str(tag.get("class")))
+                if count_tag:
+                    try:
+                        val = int(count_tag.get_text(strip=True).replace(',', ''))
+                        reaction_total += val
+                    except: pass
 
-        # --- 4. 指標計算 ---
+        # 5. 指標計算
         post_date_str = date_tag.get_text(strip=True) if date_tag else ""
         elapsed_text = ""
         popularity_score = 0.0
         potential_score = 0.0
         
         if post_date_str:
-            post_dt = datetime.strptime(post_date_str, "%Y/%m/%d %H:%M").replace(tzinfo=timezone(timedelta(hours=+9)))
-            diff = now_jst - post_dt
-            total_min = diff.total_seconds() / 60
-            
-            d, h, m = diff.days, (diff.seconds // 3600), ((diff.seconds // 60) % 60)
-            elapsed_text = f"{d}日{h}時間{m}分" if d > 0 else f"{h}時間{m}分"
-            
-            if total_min >= 0:
-                # 注目度 (1分あたりの閲覧数)
-                popularity_score = round(view_count / (total_min + 0.1), 3)
-                # ランキングポテンシャル (共感100点, 回答50点, 閲覧1点として経過時間で割る)
-                potential_score = round(((empathy_count * 100) + (ans_count * 50) + view_count) / (total_min + 1), 2)
+            try:
+                post_dt = datetime.strptime(post_date_str, "%Y/%m/%d %H:%M").replace(tzinfo=timezone(timedelta(hours=+9)))
+                diff = now_jst - post_dt
+                total_min = diff.total_seconds() / 60
+                
+                d, h, m = diff.days, (diff.seconds // 3600), ((diff.seconds // 60) % 60)
+                elapsed_text = f"{d}日{h}時間{m}分" if d > 0 else f"{h}時間{m}分"
+                
+                if total_min >= 0:
+                    popularity_score = round(view_count / (total_min + 0.1), 3)
+                    # ランキングポテンシャルの計算
+                    potential_score = round(((empathy_count * 100) + (ans_count * 50) + (reaction_total * 30) + view_count) / (total_min + 1), 2)
+            except: pass
 
         answer_ratio = round((ans_count / view_count) * 100, 2) if view_count > 0 else 0.0
         score_ratio = round(popularity_score / answer_ratio, 2) if answer_ratio > 0 else 0.0
