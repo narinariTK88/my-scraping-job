@@ -177,4 +177,4 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         return None
 
 if __name__ == "__main__":
-    scrape_chiebukuro(max_pages=5, output_dir="./", margin_sec=0.5)
+    scrape_chiebukuro(max_pages=50, output_dir="./", margin_sec=0.5)
