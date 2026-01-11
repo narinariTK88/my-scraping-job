@@ -76,12 +76,14 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         res = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(res.content, "html.parser")
 
-        # 1. 基本テキスト・統計
+        # --- 1. 本文冒頭（改行と余計な空白を徹底除去） ---
         content_tag = soup.select_one('h1[class*="ClapLv1TextBlock_Chie-TextBlock__Text__"]')
         summary = ""
         if content_tag:
             raw_text = content_tag.get_text(" ", strip=True)
-            summary = (raw_text[:summary_len] + '...') if len(raw_text) > summary_len else raw_text
+            # 全ての改行、タブ、連続した空白をスペース1つに置換
+            clean_text = re.sub(r'[\r\n\t\s]+', ' ', raw_text).strip()
+            summary = (clean_text[:summary_len] + '...') if len(clean_text) > summary_len else clean_text
 
         cat_tag = soup.select_one('a[class*="ClapLv2QuestionItem_Chie-QuestionItem__SubAnchor__"]')
         user_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__UserName__"]')
@@ -91,7 +93,7 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         
         ans_count = int(ans_tag.get_text(strip=True)) if ans_tag else 0
         
-        # 2. 閲覧数・共感数の取得
+        # --- 2. 閲覧数・共感数の取得 ---
         view_count = 0
         empathy_count = 0
         sub_info_tags = soup.select('p[class*="ClapLv1TextBlock_Chie-TextBlock__Text--colorGray__"]')
@@ -104,9 +106,8 @@ def parse_detail_page(url, headers, summary_len, now_jst):
                 match = re.search(r'([\d,]+)', text)
                 if match: empathy_count = int(match.group(1).replace(',', ''))
 
-        # 3. 回答リアクション総数の集計
+        # --- 3. 回答リアクション総数の集計 ---
         reaction_total = 0
-        # 各回答ブロックにあるリアクションボタンの数値を合計
         reactions = soup.select('span[class*="ClapLv2ReactionIcon_Chie-ReactionIcon__Count__"]')
         for r in reactions:
             try:
@@ -114,7 +115,7 @@ def parse_detail_page(url, headers, summary_len, now_jst):
                 reaction_total += val
             except: continue
 
-        # 4. 指標計算
+        # --- 4. 指標計算 ---
         post_date_str = date_tag.get_text(strip=True) if date_tag else ""
         elapsed_text = ""
         popularity_score = 0.0
@@ -129,8 +130,9 @@ def parse_detail_page(url, headers, summary_len, now_jst):
             elapsed_text = f"{d}日{h}時間{m}分" if d > 0 else f"{h}時間{m}分"
             
             if total_min >= 0:
+                # 注目度 (1分あたりの閲覧数)
                 popularity_score = round(view_count / (total_min + 0.1), 3)
-                # ポテンシャル算出ロジック
+                # ランキングポテンシャル (共感100点, 回答50点, 閲覧1点として経過時間で割る)
                 potential_score = round(((empathy_count * 100) + (ans_count * 50) + view_count) / (total_min + 1), 2)
 
         answer_ratio = round((ans_count / view_count) * 100, 2) if view_count > 0 else 0.0
