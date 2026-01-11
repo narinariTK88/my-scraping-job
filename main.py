@@ -8,6 +8,9 @@ import random
 from datetime import datetime, timedelta, timezone
 
 def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=50):
+    """
+    ヤフー知恵袋をスクレイピングし、分析指標を含めたCSVを出力する
+    """
     base_list_url = "https://chiebukuro.yahoo.co.jp/question/list?flg=0&fr=common-navi"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -17,6 +20,9 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
         os.makedirs(output_dir)
 
     all_data = []
+    seen_urls = set() # 重複取得防止用
+    
+    # 日本標準時(JST)の取得
     jst = timezone(timedelta(hours=+9), 'JST')
     now_jst = datetime.now(jst)
 
@@ -29,15 +35,30 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
             res.raise_for_status()
             soup = BeautifulSoup(res.content, "html.parser")
             
+            # ページ内の詳細URLを抽出
             links = soup.find_all('a', href=re.compile(r'https://detail.chiebukuro.yahoo.co.jp/qa/question_detail/q\d+'))
-            target_urls = list(dict.fromkeys([l.get('href') for l in links]))
+            
+            # リスト内重複を排除
+            page_urls = []
+            for l in links:
+                url = l.get('href')
+                if url not in page_urls:
+                    page_urls.append(url)
 
-            for i, detail_url in enumerate(target_urls):
-                print(f"  [{i+1}/{len(target_urls)}] 解析中...")
+            for i, detail_url in enumerate(page_urls):
+                # 全体での重複チェック
+                if detail_url in seen_urls:
+                    print(f"  [{i+1}/{len(page_urls)}] スキップ (既出)")
+                    continue
+                
+                print(f"  [{i+1}/{len(page_urls)}] 解析中...")
                 detail_data = parse_detail_page(detail_url, headers, summary_len, now_jst)
+                
                 if detail_data:
                     all_data.append(detail_data)
+                    seen_urls.add(detail_url)
                 
+                # 自然な待機（1秒 + 設定マージン + 0〜3秒のランダム）
                 rand_wait = random.uniform(0, 3.0)
                 total_wait = 1.0 + margin_sec + rand_wait
                 print(f"    (待機中: {total_wait:.2f}秒)")
@@ -50,7 +71,7 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
     if all_data:
         df = pd.DataFrame(all_data)
 
-        # --- 指定された順番で列を固定 ---
+        # 列の順番を固定
         column_order = [
             "質問日時", 
             "カテゴリ", 
@@ -58,8 +79,9 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
             "経過時間", 
             "回答数", 
             "閲覧数", 
-            "注目度",       # 閲覧数 ÷ 経過時間
-            "回答競争率",   # 回答数 ÷ 閲覧数 (%)
+            "注目度", 
+            "回答競争率", 
+            "注目/競争比", 
             "受付終了まで", 
             "URL", 
             "本文冒頭"
@@ -70,9 +92,10 @@ def scrape_chiebukuro(max_pages=1, output_dir="./", margin_sec=0.0, summary_len=
         file_name = f"chiebukuro_{now_str}_{max_pages}pages.csv"
         file_path = os.path.join(output_dir, file_name)
         
+        # Excel対応のBOM付きUTF-8
         df.to_csv(file_path, index=False, encoding="utf-8-sig")
         print(f"\n--- 完了 ---")
-        print(f"数値データと2つの指数（注目度・回答競争率）をまとめました。")
+        print(f"ユニークデータ件数: {len(all_data)} 件")
         print(f"保存先: {file_path}")
     else:
         print("データが取得できませんでした。")
@@ -84,20 +107,20 @@ def parse_detail_page(url, headers, summary_len, now_jst):
 
         # 本文取得
         content_tag = soup.select_one('h1[class*="ClapLv1TextBlock_Chie-TextBlock__Text__"]')
+        summary = ""
         if content_tag:
             raw_text = content_tag.get_text(" ", strip=True)
             clean_text = re.sub(r'[\r\n\s]+', ' ', raw_text)
             summary = (clean_text[:summary_len] + '...') if len(clean_text) > summary_len else clean_text
-        else:
-            summary = ""
 
+        # 基本情報の抽出
         cat_tag = soup.select_one('a[class*="ClapLv2QuestionItem_Chie-QuestionItem__SubAnchor__"]')
         user_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__UserName__"]')
         date_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__Date__"]')
         ans_tag = soup.select_one('strong[class*="ClapLv2QuestionItem_Chie-QuestionItem__AnswerNumber__"]')
         limit_tag = soup.select_one('p[class*="ClapLv2QuestionItem_Chie-QuestionItem__DeadlineText__"]')
         
-        # 回答数・閲覧数
+        # 数値データのパース
         ans_count = int(ans_tag.get_text(strip=True)) if ans_tag else 0
         view_count = 0
         sub_info_tag = soup.select_one('p[class*="ClapLv1TextBlock_Chie-TextBlock__Text--colorGray__"]')
@@ -105,32 +128,38 @@ def parse_detail_page(url, headers, summary_len, now_jst):
             match = re.search(r'([\d,]+)閲覧', sub_info_tag.get_text())
             if match: view_count = int(match.group(1).replace(',', ''))
 
-        # 各種指数の計算
+        # 各種指標の計算
         post_date_str = date_tag.get_text(strip=True) if date_tag else ""
         elapsed_text = ""
-        popularity_score = 0.0  # 注目度
-        answer_ratio = 0.0      # 回答競争率
+        popularity_score = 0.0 # 注目度
+        answer_ratio = 0.0     # 回答競争率
+        score_ratio = 0.0      # 注目/競争比
         
         if post_date_str:
             try:
-                # 経過時間と注目度の計算
                 post_dt = datetime.strptime(post_date_str, "%Y/%m/%d %H:%M").replace(tzinfo=timezone(timedelta(hours=+9)))
                 diff = now_jst - post_dt
                 total_minutes = diff.total_seconds() / 60
                 
+                # 経過時間テキスト
                 d = diff.days
                 h, rem = divmod(diff.seconds, 3600)
                 m, _ = divmod(rem, 60)
                 elapsed_text = f"{d}日{h}時間{m}分" if d > 0 else f"{h}時間{m}分"
                 
+                # 1. 注目度 (閲覧数 / 経過分)
                 if total_minutes > 0:
-                    popularity_score = round(view_count / total_minutes, 3) # 細かく小数点3位まで
+                    popularity_score = round(view_count / total_minutes, 3)
             except:
                 elapsed_text = "計算エラー"
 
-        # 回答競争率の計算 (閲覧数に対する回答数の割合 %)
+        # 2. 回答競争率 (回答数 / 閲覧数 * 100)
         if view_count > 0:
             answer_ratio = round((ans_count / view_count) * 100, 2)
+
+        # 3. 注目/競争比 (注目度 / 回答競争率)
+        if answer_ratio > 0:
+            score_ratio = round(popularity_score / answer_ratio, 2)
 
         return {
             "質問日時": post_date_str,
@@ -141,6 +170,7 @@ def parse_detail_page(url, headers, summary_len, now_jst):
             "閲覧数": view_count,
             "注目度": popularity_score,
             "回答競争率": answer_ratio,
+            "注目/競争比": score_ratio,
             "受付終了まで": limit_tag.get_text(strip=True).replace("回答受付終了まで", "") if limit_tag else "不明",
             "URL": url,
             "本文冒頭": summary
@@ -149,4 +179,5 @@ def parse_detail_page(url, headers, summary_len, now_jst):
         return None
 
 if __name__ == "__main__":
-    scrape_chiebukuro(max_pages=5, output_dir="./", margin_sec=0.5, summary_len=50)
+    # max_pagesを増やすことでより多くの過去データを取得できます
+    scrape_chiebukuro(max_pages=5, output_dir="./scraped_data", margin_sec=0.5, summary_len=50)
