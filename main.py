@@ -37,6 +37,7 @@ def save_urls(max_pages):
             res = session.get(list_url, timeout=15)
             res.raise_for_status()
             soup = BeautifulSoup(res.content, "html.parser")
+            # 詳細ページのURLパターンにマッチするリンクを抽出
             links = soup.find_all('a', href=re.compile(r'https://detail.chiebukuro.yahoo.co.jp/qa/question_detail/q\d+'))
             count_on_page = 0
             for l in links:
@@ -58,7 +59,7 @@ def save_urls(max_pages):
 # フェーズ2: 保存されたURLを詳細解析する
 def analyze_urls(margin_sec, summary_len):
     if not os.path.exists(URL_LIST_FILE):
-        print("URLリストが見つかりません。")
+        print(f"エラー: {URL_LIST_FILE} が見つかりません。")
         return
 
     session = get_session()
@@ -71,10 +72,11 @@ def analyze_urls(margin_sec, summary_len):
 
     print(f"--- フェーズ2: 詳細解析開始 (全 {len(target_urls)} 件) ---")
     for i, url in enumerate(target_urls):
-        print(f"  [{i+1}/{len(target_urls)}] 解析中...")
+        print(f"  [{i+1}/{len(target_urls)}] 解析中: {url}")
         data = parse_detail_page(url, session, now_jst, summary_len)
         if data:
             all_data.append(data)
+        # サーバー負荷軽減のための待機
         time.sleep(1.0 + margin_sec + random.uniform(0.0, 2.0))
 
     if all_data:
@@ -87,10 +89,11 @@ def analyze_urls(margin_sec, summary_len):
         ]
         df = df.reindex(columns=[c for c in column_order if c in df.columns])
         
+        # ファイル名に実行日時を付けて保存
         file_path = f"chiebukuro_analysis_{now_jst.strftime('%Y%m%d_%H%M%S')}.csv"
         df.to_csv(file_path, index=False, encoding="utf-8-sig")
-        if os.path.exists(URL_LIST_FILE):
-            os.remove(URL_LIST_FILE)
+        
+        # 【修正】URLリストファイルは削除せず、履歴として残す
         print(f"--- 解析完了: {file_path} ---")
         return df
 
@@ -104,6 +107,7 @@ def parse_detail_page(url, session, now_jst, summary_len):
         if res.status_code != 200: return None
         soup = BeautifulSoup(res.content, "html.parser")
         
+        # 基本情報取得
         content_tag = soup.select_one('h1[class*="ClapLv1TextBlock_Chie-TextBlock__Text__"]')
         summary = ""
         if content_tag:
@@ -111,23 +115,31 @@ def parse_detail_page(url, session, now_jst, summary_len):
             summary = re.sub(r'[\r\n\t\s]+', ' ', raw_text).strip()
             summary = (summary[:summary_len] + '...') if len(summary) > summary_len else summary
 
-        user_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__UserName__"]')
-        user_name = user_tag.get_text(strip=True).replace("さん", "") if user_tag else "匿名"
+        user_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__Date__"]')
+        post_str = user_tag.get_text(strip=True) if user_tag else ""
+        
+        user_name_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__UserName__"]')
+        user_name = user_name_tag.get_text(strip=True).replace("さん", "") if user_name_tag else "匿名"
+        
         cat_tag = soup.select_one('a[class*="ClapLv2QuestionItem_Chie-QuestionItem__SubAnchor__"]')
         category = cat_tag.get_text(strip=True) if cat_tag else "未分類"
+        
         ans_tag = soup.select_one('strong[class*="ClapLv2QuestionItem_Chie-QuestionItem__AnswerNumber__"]')
         ans_count = safe_extract_int(ans_tag.get_text()) if ans_tag else 0
         
+        # 閲覧数・共感数の取得（全スキャン）
         v_count, e_count = 0, 0
         all_gray_texts = soup.select('p[class*="Chie-TextBlock__Text--colorGray"]')
         for p in all_gray_texts:
             txt = p.get_text()
             if "閲覧" in txt: v_count = safe_extract_int(txt)
             if "共感" in txt: e_count = safe_extract_int(txt)
+        
         if e_count == 0:
             e_tag = soup.find("strong", class_=re.compile(r"ReactionCounter.*TextCount"))
             if e_tag: e_count = safe_extract_int(e_tag.get_text())
 
+        # 全回答ページのリアクションをページ遷移して集計
         while True:
             for label in ["なるほど", "そうだね", "ありがとう"]:
                 label_tags = soup.find_all(lambda tag: tag.name == "p" and label in tag.get_text())
@@ -136,6 +148,7 @@ def parse_detail_page(url, session, now_jst, summary_len):
                     if count_tag:
                         all_reaction_total += safe_extract_int(count_tag.get_text())
 
+            # ページ遷移「次へ」の確認
             next_link = soup.select_one('a[class*="Pagination__Anchor--Next"]')
             if next_link and next_link.get('href') and page_count < 10:
                 next_url = next_link.get('href')
@@ -151,9 +164,8 @@ def parse_detail_page(url, session, now_jst, summary_len):
 
         limit_tag = soup.select_one('p[class*="ClapLv2QuestionItem_Chie-QuestionItem__DeadlineText__"]')
         deadline = limit_tag.get_text(strip=True).replace("回答受付終了まで", "") if limit_tag else "不明"
-        date_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__Date__"]')
-        post_str = date_tag.get_text(strip=True) if date_tag else ""
         
+        # 指標計算
         elapsed, pop, pot, comp_rate, ratio = "0分", 0.0, 0.0, 0.0, 0.0
         if post_str:
             try:
@@ -174,18 +186,19 @@ def parse_detail_page(url, session, now_jst, summary_len):
             "受付終了まで": deadline, "URL": url, "本文冒頭": summary
         }
     except Exception as e:
+        print(f"解析中の予期せぬエラー: {e}")
         return None
 
-# --- メイン処理 (ここが自動判別部分) ---
+# --- メイン実行部 ---
 if __name__ == "__main__":
     import sys
-    # 環境判別: google.colab がインポートされていればテストモード
+    # 環境自動判別（Google Colabかそれ以外か）
     is_colab = 'google.colab' in sys.modules
 
     if is_colab:
-        print("Running in Colab Test Mode...")
+        print("【実行モード】Google Colab (テスト実行)")
         s = get_session()
-        # Colabテスト時は2ページ収集して即解析
+        # テストとして2ページ収集して即時解析
         urls = save_urls(max_pages=2)
         if urls:
             df = analyze_urls(margin_sec=1.0, summary_len=50)
@@ -193,7 +206,7 @@ if __name__ == "__main__":
                 from google.colab import data_table
                 display(data_table.DataTable(df, include_index=False))
     else:
-        print("Running in CLI (GitHub Actions) Mode...")
+        print("【実行モード】CLI / GitHub Actions (本番実行)")
         parser = argparse.ArgumentParser()
         parser.add_argument("--mode", choices=["save_urls", "analyze"], required=True)
         parser.add_argument("--pages", type=int, default=10)
