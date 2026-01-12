@@ -25,7 +25,7 @@ jobs:
       # 19:00(UTC 10:00)の場合：URLの取得のみ実行
       - name: URL収集フェーズ
         if: github.event.schedule == '0 10 * * *'
-        run: python main.py --mode save_urls --pages 1
+        run: python main.py --mode save_urls --pages 2
 
       # 00:16(UTC 15:16)または手動実行の場合：保存されたURLを解析
       - name: 詳細解析フェーズ
