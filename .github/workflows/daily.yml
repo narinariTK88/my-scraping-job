@@ -1,9 +1,10 @@
-name: Chiebukuro-Scraper
+name: Chiebukuro-Scraper-v2
 
 on:
   schedule:
-    - cron: '16 15 * * *' # 日本時間の午前0時16分に毎日実行
-  workflow_dispatch:      # 手動実行用ボタンを表示
+    - cron: '0 10 * * *'  # 19:00 JST (UTC 10:00) -> URL収集
+    - cron: '16 15 * * *' # 00:16 JST (UTC 15:16) -> 詳細解析（既存の実行時間）
+  workflow_dispatch:      # 手動実行用ボタン
 
 jobs:
   build:
@@ -21,16 +22,21 @@ jobs:
         run: |
           pip install requests beautifulsoup4 pandas lxml
 
-      - name: スクレイピングを実行
-        run: python main.py  # スクリプトのファイル名がmain.pyであることを確認してください
+      # 19:00(UTC 10:00)の場合：URLの取得のみ実行
+      - name: URL収集フェーズ
+        if: github.event.schedule == '0 10 * * *'
+        run: python main.py --mode save_urls
+
+      # 00:16(UTC 15:16)または手動実行の場合：保存されたURLを解析
+      - name: 詳細解析フェーズ
+        if: github.event.schedule == '16 15 * * *' || github.event_name == 'workflow_dispatch'
+        run: python main.py --mode analyze
 
       - name: 結果を保存
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add *.csv
-          # コミットする変更がある場合のみコミット
-          git commit -m "Update scraped data" || exit 0
-          # リモートの最新の変更を取り込んでからPush（競合防止）
+          git commit -m "Update data [skip ci]" || exit 0
           git pull --rebase origin main
           git push origin main
