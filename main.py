@@ -20,7 +20,6 @@ def get_session():
 
 def safe_extract_int(text):
     if not text: return 0
-    # 「8人」「閲覧数：1,234」などから数字だけを抽出
     match = re.search(r'([\d,]+)', text)
     if match:
         return int(match.group(1).replace(',', ''))
@@ -45,7 +44,7 @@ def save_urls(max_pages):
                 if url not in all_urls:
                     all_urls.append(url)
                     count_on_page += 1
-            print(f"  Page {page}: {count_on_page} 件の新規URLを検知 (累計: {len(all_urls)})")
+            print(f"  Page {page}: {count_on_page} 件検知 (累計: {len(all_urls)})")
             time.sleep(1.0 + random.uniform(1.0, 2.0))
         except Exception as e:
             print(f"一覧取得エラー: {e}")
@@ -72,11 +71,10 @@ def analyze_urls(margin_sec, summary_len):
 
     print(f"--- フェーズ2: 詳細解析開始 (全 {len(target_urls)} 件) ---")
     for i, url in enumerate(target_urls):
-        print(f"  [{i+1}/{len(target_urls)}] 解析中: {url}")
+        print(f"  [{i+1}/{len(target_urls)}] 解析中...")
         data = parse_detail_page(url, session, now_jst, summary_len)
         if data:
             all_data.append(data)
-        # 固定1s + マージン + ランダム
         time.sleep(1.0 + margin_sec + random.uniform(0.0, 2.0))
 
     if all_data:
@@ -91,7 +89,6 @@ def analyze_urls(margin_sec, summary_len):
         
         file_path = f"chiebukuro_analysis_{now_jst.strftime('%Y%m%d_%H%M%S')}.csv"
         df.to_csv(file_path, index=False, encoding="utf-8-sig")
-        # 解析が終わったらリストを削除（Actions用）
         if os.path.exists(URL_LIST_FILE):
             os.remove(URL_LIST_FILE)
         print(f"--- 解析完了: {file_path} ---")
@@ -107,7 +104,6 @@ def parse_detail_page(url, session, now_jst, summary_len):
         if res.status_code != 200: return None
         soup = BeautifulSoup(res.content, "html.parser")
         
-        # --- 1ページ目のみで取得する基本情報 ---
         content_tag = soup.select_one('h1[class*="ClapLv1TextBlock_Chie-TextBlock__Text__"]')
         summary = ""
         if content_tag:
@@ -122,22 +118,17 @@ def parse_detail_page(url, session, now_jst, summary_len):
         ans_tag = soup.select_one('strong[class*="ClapLv2QuestionItem_Chie-QuestionItem__AnswerNumber__"]')
         ans_count = safe_extract_int(ans_tag.get_text()) if ans_tag else 0
         
-        # 閲覧数・共感数の取得（グレー文字スキャン）
         v_count, e_count = 0, 0
         all_gray_texts = soup.select('p[class*="Chie-TextBlock__Text--colorGray"]')
         for p in all_gray_texts:
             txt = p.get_text()
             if "閲覧" in txt: v_count = safe_extract_int(txt)
             if "共感" in txt: e_count = safe_extract_int(txt)
-        
-        # 強力な共感数取得（クラス名直接）
         if e_count == 0:
             e_tag = soup.find("strong", class_=re.compile(r"ReactionCounter.*TextCount"))
             if e_tag: e_count = safe_extract_int(e_tag.get_text())
 
-        # --- 全回答ページのリアクション集計ループ ---
         while True:
-            # 現在のページのリアクションを集計
             for label in ["なるほど", "そうだね", "ありがとう"]:
                 label_tags = soup.find_all(lambda tag: tag.name == "p" and label in tag.get_text())
                 for lt in label_tags:
@@ -145,13 +136,11 @@ def parse_detail_page(url, session, now_jst, summary_len):
                     if count_tag:
                         all_reaction_total += safe_extract_int(count_tag.get_text())
 
-            # 「次へ」ボタン判定
             next_link = soup.select_one('a[class*="Pagination__Anchor--Next"]')
-            if next_link and next_link.get('href') and page_count < 10: # 最大10ページ制限
+            if next_link and next_link.get('href') and page_count < 10:
                 next_url = next_link.get('href')
                 if next_url.startswith('/'):
                     next_url = "https://chiebukuro.yahoo.co.jp" + next_url
-                
                 time.sleep(1.0 + random.uniform(0.5, 1.0))
                 res = session.get(next_url, timeout=15)
                 if res.status_code != 200: break
@@ -160,7 +149,6 @@ def parse_detail_page(url, session, now_jst, summary_len):
             else:
                 break
 
-        # --- 指標計算 ---
         limit_tag = soup.select_one('p[class*="ClapLv2QuestionItem_Chie-QuestionItem__DeadlineText__"]')
         deadline = limit_tag.get_text(strip=True).replace("回答受付終了まで", "") if limit_tag else "不明"
         date_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__Date__"]')
@@ -186,19 +174,18 @@ def parse_detail_page(url, session, now_jst, summary_len):
             "受付終了まで": deadline, "URL": url, "本文冒頭": summary
         }
     except Exception as e:
-        print(f"  解析失敗: {e}")
         return None
 
-# --- 実行ブロック ---
+# --- メイン処理 (ここが自動判別部分) ---
 if __name__ == "__main__":
-    # Colabで動かす場合は、この下の変数を書き換えて実行してください
-    # Actionsで動かす場合は、この if ブロックを argparse 形式に差し替えます
-    
-    RUN_COLAB_TEST = True # Colabでテストする場合は True
-    
-    if RUN_COLAB_TEST:
+    import sys
+    # 環境判別: google.colab がインポートされていればテストモード
+    is_colab = 'google.colab' in sys.modules
+
+    if is_colab:
+        print("Running in Colab Test Mode...")
         s = get_session()
-        # テスト実行（2ページ分取得して解析）
+        # Colabテスト時は2ページ収集して即解析
         urls = save_urls(max_pages=2)
         if urls:
             df = analyze_urls(margin_sec=1.0, summary_len=50)
@@ -206,12 +193,15 @@ if __name__ == "__main__":
                 from google.colab import data_table
                 display(data_table.DataTable(df, include_index=False))
     else:
-        # GitHub Actions用
+        print("Running in CLI (GitHub Actions) Mode...")
         parser = argparse.ArgumentParser()
         parser.add_argument("--mode", choices=["save_urls", "analyze"], required=True)
         parser.add_argument("--pages", type=int, default=10)
         parser.add_argument("--margin", type=float, default=1.0)
         parser.add_argument("--len", type=int, default=50)
         args = parser.parse_args()
-        if args.mode == "save_urls": save_urls(args.pages)
-        elif args.mode == "analyze": analyze_urls(args.margin, args.len)
+        
+        if args.mode == "save_urls":
+            save_urls(max_pages=args.pages)
+        elif args.mode == "analyze":
+            analyze_urls(margin_sec=args.margin, summary_len=args.len)
