@@ -29,13 +29,13 @@ jobs:
       # 19:00の定時実行、または手動実行の時に動く
       - name: URL収集フェーズ
         if: github.event.schedule == '0 10 * * *' || github.event_name == 'workflow_dispatch'
-        run: python main.py --mode save_urls --pages 5
+        run: python main.py --mode save_urls --pages 75
 
       # 【詳細解析フェーズ】
       # 00:16の定時実行、または手動実行の時に動く
       - name: 詳細解析フェーズ
         if: github.event.schedule == '16 15 * * *' || github.event_name == 'workflow_dispatch'
-        run: python main.py --mode analyze --margin 1.0 --len 100
+        run: python main.py --mode analyze --margin 0.8 --len 100
 
       # 【結果を保存】
       # 生成されたCSVファイルをGitHubリポジトリにコミット・プッシュ
