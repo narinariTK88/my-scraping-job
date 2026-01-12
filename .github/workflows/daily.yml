@@ -2,16 +2,15 @@ name: Chiebukuro-Scraper-v2
 
 on:
   schedule:
-    - cron: '0 10 * * *'  # 日本時間の19:00 (UTC 10:00) -> 毎日自動でURL収集
-    - cron: '16 15 * * *' # 日本時間の00:16 (UTC 15:16) -> 毎日自動で詳細解析
-  workflow_dispatch:      # 手動実行用ボタンを表示
+    - cron: '0 10 * * *'  # 日本時間 19:00 (UTC 10:00) -> URL収集
+    - cron: '16 15 * * *' # 日本時間 00:16 (UTC 15:16) -> 詳細解析
+  workflow_dispatch:      # 手動実行用ボタン
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 書き込み権限を明示的に許可（これがないと保存に失敗することがあります）
     permissions:
-      contents: write
+      contents: write    # CSVを保存するために書き込み権限を許可
 
     steps:
       - name: リポジトリを読み込む
@@ -26,26 +25,31 @@ jobs:
         run: |
           pip install requests beautifulsoup4 pandas lxml
 
-      # 手動実行、または19:00のスケジュールの時に動く
+      # 【URL収集フェーズ】
+      # 19:00の定時実行、または手動実行の時に動く
       - name: URL収集フェーズ
-        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 10 * * *'
-        run: python main.py --mode save_urls --pages 2
+        if: github.event.schedule == '0 10 * * *' || github.event_name == 'workflow_dispatch'
+        run: python main.py --mode save_urls --pages 5
 
-      # 手動実行、または深夜00:16のスケジュールの時に動く
+      # 【詳細解析フェーズ】
+      # 00:16の定時実行、または手動実行の時に動く
       - name: 詳細解析フェーズ
-        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '16 15 * * *'
+        if: github.event.schedule == '16 15 * * *' || github.event_name == 'workflow_dispatch'
         run: python main.py --mode analyze --margin 1.0 --len 100
 
+      # 【結果を保存】
+      # 生成されたCSVファイルをGitHubリポジトリにコミット・プッシュ
       - name: 結果を保存
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          # CSVファイルが存在する場合のみ処理を進める
+          
+          # CSVが存在するか確認してから追加
           if [ -n "$(ls *.csv 2>/dev/null)" ]; then
             git add *.csv
             git commit -m "Update chiebukuro data [skip ci]" || echo "No changes to commit"
             git pull --rebase origin main
             git push origin main
           else
-            echo "No CSV files found to commit."
+            echo "保存するCSVファイルが見つかりませんでした。"
           fi
