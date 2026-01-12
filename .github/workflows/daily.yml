@@ -2,13 +2,17 @@ name: Chiebukuro-Scraper-v2
 
 on:
   schedule:
-    - cron: '0 10 * * *'  # 日本時間の19:00 (UTC 10:00) -> URL収集
-    - cron: '16 15 * * *' # 日本時間の00:16 (UTC 15:16) -> 詳細解析
-  workflow_dispatch:      # 手動実行用
+    - cron: '0 10 * * *'  # 日本時間の19:00 (UTC 10:00) -> 毎日自動でURL収集
+    - cron: '16 15 * * *' # 日本時間の00:16 (UTC 15:16) -> 毎日自動で詳細解析
+  workflow_dispatch:      # 手動実行用ボタンを表示
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 書き込み権限を明示的に許可（これがないと保存に失敗することがあります）
+    permissions:
+      contents: write
+
     steps:
       - name: リポジトリを読み込む
         uses: actions/checkout@v3
@@ -22,24 +26,26 @@ jobs:
         run: |
           pip install requests beautifulsoup4 pandas lxml
 
-      # 19:00(UTC 10:00)の場合：URLの取得のみ実行
+      # 手動実行、または19:00のスケジュールの時に動く
       - name: URL収集フェーズ
-        if: github.event.schedule == '0 10 * * *'
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 10 * * *'
         run: python main.py --mode save_urls --pages 2
 
-      # 00:16(UTC 15:16)または手動実行の場合：保存されたURLを解析
+      # 手動実行、または深夜00:16のスケジュールの時に動く
       - name: 詳細解析フェーズ
-        if: github.event.schedule == '16 15 * * *' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '16 15 * * *'
         run: python main.py --mode analyze --margin 1.0 --len 100
 
       - name: 結果を保存
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add *.csv
-          # コミットする変更がある場合のみコミット
-          # [skip ci] を含めることで、自身によるコミットでアクションが再起動するのを防ぐ
-          git commit -m "Update data [skip ci]" || exit 0
-          # リモートの最新の変更を取り込んでからPush
-          git pull --rebase origin main
-          git push origin main
+          # CSVファイルが存在する場合のみ処理を進める
+          if [ -n "$(ls *.csv 2>/dev/null)" ]; then
+            git add *.csv
+            git commit -m "Update chiebukuro data [skip ci]" || echo "No changes to commit"
+            git pull --rebase origin main
+            git push origin main
+          else
+            echo "No CSV files found to commit."
+          fi
