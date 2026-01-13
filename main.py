@@ -25,7 +25,6 @@ def safe_extract_int(text):
         return int(match.group(1).replace(',', ''))
     return 0
 
-# フェーズ1: URLだけを取得して保存する
 def save_urls(max_pages):
     session = get_session()
     all_urls = []
@@ -55,7 +54,6 @@ def save_urls(max_pages):
         print(f"--- {len(all_urls)} 件のURLを {URL_LIST_FILE} に保存しました ---")
     return all_urls
 
-# フェーズ2: 保存されたURLを詳細解析する
 def analyze_urls(margin_sec, summary_len):
     if not os.path.exists(URL_LIST_FILE):
         print(f"エラー: {URL_LIST_FILE} が見つかりません。")
@@ -72,47 +70,36 @@ def analyze_urls(margin_sec, summary_len):
     for i, url in enumerate(target_urls):
         current_id = i + 1
         now_jst = datetime.now(jst)
-        
         print(f"  [{current_id}/{len(target_urls)}] 解析中...")
         data = parse_detail_page(url, session, now_jst, summary_len, current_id)
         if data:
             all_data.append(data)
-        
         time.sleep(1.0 + margin_sec + random.uniform(0.0, 2.0))
 
     if all_data:
         df = pd.DataFrame(all_data)
-        
-        # 列の整理（最後にラベル用の列を追加）
         column_order = [
             "ID", "質問日時", "カテゴリ", "投稿者名", "経過時間", 
-            "回答数", "閲覧数", "回答転換率", "共感数", "回答リアクション総数",
+            "回答数", "閲覧数", "回答難易度", "共感数", "回答リアクション総数",
             "注目度", "回答競争率", "注目/競争比", "ランキングポテンシャル",
             "受付終了まで", "URL", "本文冒頭",
-            "マイフラグ", "ベストアンサーフラグ"  # ← 追加
+            "マイフラグ", "ベストアンサーフラグ"
         ]
-        
-        # 指定した列順にリインデックス（存在しない列は自動でNaNになるが、後で0で埋める）
         df = df.reindex(columns=column_order)
-        
-        # ラベル列を 0 で初期化
         df["マイフラグ"] = 0
         df["ベストアンサーフラグ"] = 0
         
         final_now = datetime.now(jst)
         file_path = f"chiebukuro_analysis_{final_now.strftime('%Y%m%d_%H%M%S')}.csv"
         df.to_csv(file_path, index=False, encoding="utf-8-sig")
-        
         print(f"--- 解析完了: {file_path} ---")
         return df
 
 def parse_detail_page(url, session, now_jst, summary_len, current_id):
     all_reaction_total = 0
-    current_url = url
     page_count = 1
-    
     try:
-        res = session.get(current_url, timeout=15)
+        res = session.get(url, timeout=15)
         if res.status_code != 200: return None
         soup = BeautifulSoup(res.content, "html.parser")
         
@@ -150,73 +137,57 @@ def parse_detail_page(url, session, now_jst, summary_len, current_id):
                     count_tag = lt.find_next_sibling(lambda t: t.name == "p" and "Count" in str(t.get("class", "")))
                     if count_tag:
                         all_reaction_total += safe_extract_int(count_tag.get_text())
-
             next_link = soup.select_one('a[class*="Pagination__Anchor--Next"]')
             if next_link and next_link.get('href') and page_count < 10:
                 next_url = next_link.get('href')
-                if next_url.startswith('/'):
-                    next_url = "https://chiebukuro.yahoo.co.jp" + next_url
+                if next_url.startswith('/'): next_url = "https://chiebukuro.yahoo.co.jp" + next_url
                 time.sleep(1.0 + random.uniform(0.5, 1.0))
                 res = session.get(next_url, timeout=15)
                 if res.status_code != 200: break
                 soup = BeautifulSoup(res.content, "html.parser")
                 page_count += 1
-            else:
-                break
+            else: break
 
         limit_tag = soup.select_one('p[class*="ClapLv2QuestionItem_Chie-QuestionItem__DeadlineText__"]')
         deadline = limit_tag.get_text(strip=True).replace("回答受付終了まで", "") if limit_tag else "不明"
         
-        elapsed, pop, pot, comp_rate, ratio, ans_cvr = "0分", 0.0, 0.0, 0.0, 0.0, 0.0
+        elapsed, pop, pot, comp_rate, ratio, ans_diff = "0分", 0.0, 0.0, 0.0, 0.0, 0.0
         if post_str:
             try:
                 dt = datetime.strptime(post_str, "%Y/%m/%d %H:%M").replace(tzinfo=timezone(timedelta(hours=+9)))
                 total_m = max(0.1, (now_jst - dt).total_seconds() / 60)
                 h, m = divmod(int(total_m), 60)
                 elapsed = f"{h}時間{m}分" if h > 0 else f"{m}分"
-                
                 pop = round(v_count / total_m, 3)
                 comp_rate = round((ans_count / v_count * 100), 2) if v_count > 0 else 0.0
-                ans_cvr = round(v_count / ans_count, 1) if ans_count > 0 else float(v_count)
+                # 回答難易度 (閲覧数 / 回答数)
+                ans_diff = round(v_count / ans_count, 1) if ans_count > 0 else float(v_count)
                 ratio = round(pop / comp_rate, 2) if comp_rate > 0 else 0.0
                 pot = round(((e_count * 100) + (ans_count * 50) + (all_reaction_total * 30) + v_count) / (total_m + 1), 2)
             except: pass
 
         return {
-            "ID": current_id,
-            "質問日時": post_str, "カテゴリ": category, "投稿者名": user_name, "経過時間": elapsed,
-            "回答数": ans_count, "閲覧数": v_count, "回答転換率": ans_cvr,
-            "共感数": e_count, "回答リアクション総数": all_reaction_total,
+            "ID": current_id, "質問日時": post_str, "カテゴリ": category, "投稿者名": user_name, "経過時間": elapsed,
+            "回答数": ans_count, "閲覧数": v_count, "回答難易度": ans_diff, "共感数": e_count, "回答リアクション総数": all_reaction_total,
             "注目度": pop, "回答競争率": comp_rate, "注目/競争比": ratio, "ランキングポテンシャル": pot,
             "受付終了まで": deadline, "URL": url, "本文冒頭": summary
         }
     except Exception as e:
         return None
 
-# --- メイン実行部 ---
 if __name__ == "__main__":
     import sys
     is_colab = 'google.colab' in sys.modules
-
     if is_colab:
-        print("【実行モード】Google Colab (テスト実行)")
-        s = get_session()
-        urls = save_urls(max_pages=2)
-        if urls:
-            df = analyze_urls(margin_sec=1.0, summary_len=50)
-            if df is not None:
-                from google.colab import data_table
-                display(data_table.DataTable(df, include_index=False))
+        print("【Google Colab】テスト実行")
+        save_urls(max_pages=2)
+        analyze_urls(margin_sec=1.0, summary_len=50)
     else:
-        print("【実行モード】CLI / GitHub Actions (本番実行)")
         parser = argparse.ArgumentParser()
         parser.add_argument("--mode", choices=["save_urls", "analyze"], required=True)
         parser.add_argument("--pages", type=int, default=10)
         parser.add_argument("--margin", type=float, default=1.0)
         parser.add_argument("--len", type=int, default=50)
         args = parser.parse_args()
-        
-        if args.mode == "save_urls":
-            save_urls(max_pages=args.pages)
-        elif args.mode == "analyze":
-            analyze_urls(margin_sec=args.margin, summary_len=args.len)
+        if args.mode == "save_urls": save_urls(max_pages=args.pages)
+        elif args.mode == "analyze": analyze_urls(margin_sec=args.margin, summary_len=args.len)
