@@ -37,7 +37,6 @@ def save_urls(max_pages):
             res = session.get(list_url, timeout=15)
             res.raise_for_status()
             soup = BeautifulSoup(res.content, "html.parser")
-            # 詳細ページのURLパターンにマッチするリンクを抽出
             links = soup.find_all('a', href=re.compile(r'https://detail.chiebukuro.yahoo.co.jp/qa/question_detail/q\d+'))
             count_on_page = 0
             for l in links:
@@ -67,37 +66,47 @@ def analyze_urls(margin_sec, summary_len):
     target_urls = df_urls["URL"].tolist()
     
     jst = timezone(timedelta(hours=+9), 'JST')
-    now_jst = datetime.now(jst)
     all_data = []
 
     print(f"--- フェーズ2: 詳細解析開始 (全 {len(target_urls)} 件) ---")
     for i, url in enumerate(target_urls):
-        print(f"  [{i+1}/{len(target_urls)}] 解析中: {url}")
-        data = parse_detail_page(url, session, now_jst, summary_len)
+        current_id = i + 1
+        now_jst = datetime.now(jst)
+        
+        print(f"  [{current_id}/{len(target_urls)}] 解析中...")
+        data = parse_detail_page(url, session, now_jst, summary_len, current_id)
         if data:
             all_data.append(data)
-        # サーバー負荷軽減のための待機
+        
         time.sleep(1.0 + margin_sec + random.uniform(0.0, 2.0))
 
     if all_data:
         df = pd.DataFrame(all_data)
-        column_order = [
-            "質問日時", "カテゴリ", "投稿者名", "経過時間", 
-            "回答数", "閲覧数", "共感数", "回答リアクション総数",
-            "注目度", "回答競争率", "注目/競争比", "ランキングポテンシャル",
-            "受付終了まで", "URL", "本文冒頭"
-        ]
-        df = df.reindex(columns=[c for c in column_order if c in df.columns])
         
-        # ファイル名に実行日時を付けて保存
-        file_path = f"chiebukuro_analysis_{now_jst.strftime('%Y%m%d_%H%M%S')}.csv"
+        # 列の整理（最後にラベル用の列を追加）
+        column_order = [
+            "ID", "質問日時", "カテゴリ", "投稿者名", "経過時間", 
+            "回答数", "閲覧数", "回答転換率", "共感数", "回答リアクション総数",
+            "注目度", "回答競争率", "注目/競争比", "ランキングポテンシャル",
+            "受付終了まで", "URL", "本文冒頭",
+            "マイフラグ", "ベストアンサーフラグ"  # ← 追加
+        ]
+        
+        # 指定した列順にリインデックス（存在しない列は自動でNaNになるが、後で0で埋める）
+        df = df.reindex(columns=column_order)
+        
+        # ラベル列を 0 で初期化
+        df["マイフラグ"] = 0
+        df["ベストアンサーフラグ"] = 0
+        
+        final_now = datetime.now(jst)
+        file_path = f"chiebukuro_analysis_{final_now.strftime('%Y%m%d_%H%M%S')}.csv"
         df.to_csv(file_path, index=False, encoding="utf-8-sig")
         
-        # 【修正】URLリストファイルは削除せず、履歴として残す
         print(f"--- 解析完了: {file_path} ---")
         return df
 
-def parse_detail_page(url, session, now_jst, summary_len):
+def parse_detail_page(url, session, now_jst, summary_len, current_id):
     all_reaction_total = 0
     current_url = url
     page_count = 1
@@ -107,7 +116,6 @@ def parse_detail_page(url, session, now_jst, summary_len):
         if res.status_code != 200: return None
         soup = BeautifulSoup(res.content, "html.parser")
         
-        # 基本情報取得
         content_tag = soup.select_one('h1[class*="ClapLv1TextBlock_Chie-TextBlock__Text__"]')
         summary = ""
         if content_tag:
@@ -117,29 +125,24 @@ def parse_detail_page(url, session, now_jst, summary_len):
 
         user_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__Date__"]')
         post_str = user_tag.get_text(strip=True) if user_tag else ""
-        
         user_name_tag = soup.select_one('p[class*="ClapLv1UserInfo_Chie-UserInfo__UserName__"]')
         user_name = user_name_tag.get_text(strip=True).replace("さん", "") if user_name_tag else "匿名"
-        
         cat_tag = soup.select_one('a[class*="ClapLv2QuestionItem_Chie-QuestionItem__SubAnchor__"]')
         category = cat_tag.get_text(strip=True) if cat_tag else "未分類"
         
         ans_tag = soup.select_one('strong[class*="ClapLv2QuestionItem_Chie-QuestionItem__AnswerNumber__"]')
         ans_count = safe_extract_int(ans_tag.get_text()) if ans_tag else 0
         
-        # 閲覧数・共感数の取得（全スキャン）
         v_count, e_count = 0, 0
         all_gray_texts = soup.select('p[class*="Chie-TextBlock__Text--colorGray"]')
         for p in all_gray_texts:
             txt = p.get_text()
             if "閲覧" in txt: v_count = safe_extract_int(txt)
             if "共感" in txt: e_count = safe_extract_int(txt)
-        
         if e_count == 0:
             e_tag = soup.find("strong", class_=re.compile(r"ReactionCounter.*TextCount"))
             if e_tag: e_count = safe_extract_int(e_tag.get_text())
 
-        # 全回答ページのリアクションをページ遷移して集計
         while True:
             for label in ["なるほど", "そうだね", "ありがとう"]:
                 label_tags = soup.find_all(lambda tag: tag.name == "p" and label in tag.get_text())
@@ -148,7 +151,6 @@ def parse_detail_page(url, session, now_jst, summary_len):
                     if count_tag:
                         all_reaction_total += safe_extract_int(count_tag.get_text())
 
-            # ページ遷移「次へ」の確認
             next_link = soup.select_one('a[class*="Pagination__Anchor--Next"]')
             if next_link and next_link.get('href') and page_count < 10:
                 next_url = next_link.get('href')
@@ -165,40 +167,40 @@ def parse_detail_page(url, session, now_jst, summary_len):
         limit_tag = soup.select_one('p[class*="ClapLv2QuestionItem_Chie-QuestionItem__DeadlineText__"]')
         deadline = limit_tag.get_text(strip=True).replace("回答受付終了まで", "") if limit_tag else "不明"
         
-        # 指標計算
-        elapsed, pop, pot, comp_rate, ratio = "0分", 0.0, 0.0, 0.0, 0.0
+        elapsed, pop, pot, comp_rate, ratio, ans_cvr = "0分", 0.0, 0.0, 0.0, 0.0, 0.0
         if post_str:
             try:
                 dt = datetime.strptime(post_str, "%Y/%m/%d %H:%M").replace(tzinfo=timezone(timedelta(hours=+9)))
                 total_m = max(0.1, (now_jst - dt).total_seconds() / 60)
                 h, m = divmod(int(total_m), 60)
                 elapsed = f"{h}時間{m}分" if h > 0 else f"{m}分"
+                
                 pop = round(v_count / total_m, 3)
                 comp_rate = round((ans_count / v_count * 100), 2) if v_count > 0 else 0.0
+                ans_cvr = round(v_count / ans_count, 1) if ans_count > 0 else float(v_count)
                 ratio = round(pop / comp_rate, 2) if comp_rate > 0 else 0.0
                 pot = round(((e_count * 100) + (ans_count * 50) + (all_reaction_total * 30) + v_count) / (total_m + 1), 2)
             except: pass
 
         return {
+            "ID": current_id,
             "質問日時": post_str, "カテゴリ": category, "投稿者名": user_name, "経過時間": elapsed,
-            "回答数": ans_count, "閲覧数": v_count, "共感数": e_count, "回答リアクション総数": all_reaction_total,
+            "回答数": ans_count, "閲覧数": v_count, "回答転換率": ans_cvr,
+            "共感数": e_count, "回答リアクション総数": all_reaction_total,
             "注目度": pop, "回答競争率": comp_rate, "注目/競争比": ratio, "ランキングポテンシャル": pot,
             "受付終了まで": deadline, "URL": url, "本文冒頭": summary
         }
     except Exception as e:
-        print(f"解析中の予期せぬエラー: {e}")
         return None
 
 # --- メイン実行部 ---
 if __name__ == "__main__":
     import sys
-    # 環境自動判別（Google Colabかそれ以外か）
     is_colab = 'google.colab' in sys.modules
 
     if is_colab:
         print("【実行モード】Google Colab (テスト実行)")
         s = get_session()
-        # テストとして2ページ収集して即時解析
         urls = save_urls(max_pages=2)
         if urls:
             df = analyze_urls(margin_sec=1.0, summary_len=50)
