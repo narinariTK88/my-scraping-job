@@ -2,15 +2,19 @@ name: Chiebukuro-Scraper-v2
 
 on:
   schedule:
+    # --- 夜のサイクル ---
     - cron: '0 10 * * *'  # 日本時間 19:00 (UTC 10:00) -> URL収集
     - cron: '16 15 * * *' # 日本時間 00:16 (UTC 15:16) -> 詳細解析
+    # --- 朝・昼のサイクル (追加) ---
+    - cron: '0 22 * * *'  # 日本時間 07:00 (UTC 22:00) -> URL収集
+    - cron: '16 3 * * *'  # 日本時間 12:16 (UTC 03:16) -> 詳細解析
   workflow_dispatch:      # 手動実行用ボタン
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write    # CSVを保存するために書き込み権限を許可
+      contents: write
 
     steps:
       - name: リポジトリを読み込む
@@ -25,26 +29,21 @@ jobs:
         run: |
           pip install requests beautifulsoup4 pandas lxml
 
-      # 【URL収集フェーズ】
-      # 19:00の定時実行、または手動実行の時に動く
+      # 19:00 または 07:00 または 手動実行時に動く
       - name: URL収集フェーズ
-        if: github.event.schedule == '0 10 * * *' || github.event_name == 'workflow_dispatch'
-        run: python main.py --mode save_urls --pages 75
+        if: github.event.schedule == '0 10 * * *' || github.event.schedule == '0 22 * * *' || github.event_name == 'workflow_dispatch'
+        run: python main.py --mode save_urls --pages 5
 
-      # 【詳細解析フェーズ】
-      # 00:16の定時実行、または手動実行の時に動く
+      # 00:16 または 12:16 または 手動実行時に動く
       - name: 詳細解析フェーズ
-        if: github.event.schedule == '16 15 * * *' || github.event_name == 'workflow_dispatch'
-        run: python main.py --mode analyze --margin 0.8 --len 100
+        if: github.event.schedule == '16 15 * * *' || github.event.schedule == '16 3 * * *' || github.event_name == 'workflow_dispatch'
+        run: python main.py --mode analyze --margin 1.0 --len 100
 
-      # 【結果を保存】
-      # 生成されたCSVファイルをGitHubリポジトリにコミット・プッシュ
       - name: 結果を保存
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # CSVが存在するか確認してから追加
           if [ -n "$(ls *.csv 2>/dev/null)" ]; then
             git add *.csv
             git commit -m "Update chiebukuro data [skip ci]" || echo "No changes to commit"
