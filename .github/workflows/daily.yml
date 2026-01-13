@@ -5,7 +5,7 @@ on:
     # --- 夜のサイクル ---
     - cron: '0 10 * * *'  # 日本時間 19:00 (UTC 10:00) -> URL収集
     - cron: '16 15 * * *' # 日本時間 00:16 (UTC 15:16) -> 詳細解析
-    # --- 朝・昼のサイクル (追加) ---
+    # --- 朝・昼のサイクル ---
     - cron: '0 22 * * *'  # 日本時間 07:00 (UTC 22:00) -> URL収集
     - cron: '16 3 * * *'  # 日本時間 12:16 (UTC 03:16) -> 詳細解析
   workflow_dispatch:      # 手動実行用ボタン
@@ -29,14 +29,21 @@ jobs:
         run: |
           pip install requests beautifulsoup4 pandas lxml
 
-      # 19:00 または 07:00 または 手動実行時に動く
-      - name: URL収集フェーズ
-        if: github.event.schedule == '0 10 * * *' || github.event.schedule == '0 22 * * *' || github.event_name == 'workflow_dispatch'
+      # --- URL収集フェーズ ---
+      # 【自動実行(schedule)】のときは 75ページ
+      - name: URL収集フェーズ (自動実行)
+        if: github.event_name == 'schedule' && (github.event.schedule == '0 10 * * *' || github.event.schedule == '0 22 * * *')
+        run: python main.py --mode save_urls --pages 75
+
+      # 【手動実行(workflow_dispatch)】のときは 5ページ
+      - name: URL収集フェーズ (手動実行)
+        if: github.event_name == 'workflow_dispatch'
         run: python main.py --mode save_urls --pages 5
 
-      # 00:16 または 12:16 または 手動実行時に動く
+      # --- 詳細解析フェーズ ---
+      # スケジュールまたは手動実行時に動く
       - name: 詳細解析フェーズ
-        if: github.event.schedule == '16 15 * * *' || github.event.schedule == '16 3 * * *' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
         run: python main.py --mode analyze --margin 1.0 --len 100
 
       - name: 結果を保存
