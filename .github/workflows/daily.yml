@@ -2,11 +2,11 @@ name: Chiebukuro-Scraper-v2
 
 on:
   schedule:
-    - cron: '0 10 * * *'  # ① 19:00 (JST) -> URL収集のみ
-    - cron: '16 15 * * *' # ② 00:16 (JST) -> 詳細解析のみ
-    - cron: '0 22 * * *'  # ③ 07:00 (JST) -> URL収集のみ
-    - cron: '16 3 * * *'  # ④ 12:16 (JST) -> 詳細解析のみ
-  workflow_dispatch:      # 手動実行 -> 両方実行
+    - cron: '0 10 * * *'  # 19:00 (JST) -> URL収集
+    - cron: '16 15 * * *' # 00:16 (JST) -> 詳細解析
+    - cron: '0 22 * * *'  # 07:00 (JST) -> URL収集
+    - cron: '16 3 * * *'  # 12:16 (JST) -> 詳細解析
+  workflow_dispatch:
 
 jobs:
   build:
@@ -21,14 +21,12 @@ jobs:
       - run: pip install requests beautifulsoup4 pandas lxml
 
       # --- URL収集フェーズ ---
-      # 19:00, 07:00, または手動実行時のみ動く
       - name: URL収集フェーズ
         if: |
           github.event.schedule == '0 10 * * *' || 
           github.event.schedule == '0 22 * * *' || 
           github.event_name == 'workflow_dispatch'
         run: |
-          # 自動なら75、手動なら5
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             python main.py --mode save_urls --pages 5
           else
@@ -36,7 +34,6 @@ jobs:
           fi
 
       # --- 詳細解析フェーズ ---
-      # 00:16, 12:16, または手動実行時のみ動く（ここを厳密に修正しました）
       - name: 詳細解析フェーズ
         if: |
           github.event.schedule == '16 15 * * *' || 
@@ -49,10 +46,12 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          # 変更がある場合のみコミット
+          
+          # dataフォルダ内の全変更を保存
+          git add data/
+          
           if [ -n "$(git status --porcelain)" ]; then
-            git add *.csv
-            git commit -m "Update chiebukuro data [skip ci]"
+            git commit -m "Update chiebukuro structured data [skip ci]"
             git pull --rebase origin main
             git push origin main
           else
