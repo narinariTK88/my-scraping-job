@@ -8,8 +8,13 @@ import random
 import argparse
 from datetime import datetime, timedelta, timezone
 
-# --- 設定 ---
-URL_LIST_FILE = "target_urls_to_analyze.csv"
+# --- フォルダ構成の設定 ---
+DATA_ROOT = "data"
+RAW_DIR = os.path.join(DATA_ROOT, "raw")     # 日々の解析済みCSV用
+TMP_DIR = os.path.join(DATA_ROOT, "tmp")     # URLリスト等の一時ファイル用
+# DATASET_DIR = os.path.join(DATA_ROOT, "dataset") # 将来の学習用ラベルデータ用
+
+URL_LIST_FILE = os.path.join(TMP_DIR, "target_urls_to_analyze.csv")
 
 def get_session():
     session = requests.Session()
@@ -17,6 +22,13 @@ def get_session():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     })
     return session
+
+def ensure_directories():
+    """必要なすべてのフォルダ構造を作成する"""
+    for d in [RAW_DIR, TMP_DIR]:
+        if not os.path.exists(d):
+            os.makedirs(d)
+            print(f"フォルダ作成: {d}")
 
 def safe_extract_int(text):
     if not text: return 0
@@ -26,6 +38,7 @@ def safe_extract_int(text):
     return 0
 
 def save_urls(max_pages):
+    ensure_directories()
     session = get_session()
     all_urls = []
     print(f"--- フェーズ1: URL収集開始 (最大 {max_pages} ページ) ---")
@@ -55,6 +68,7 @@ def save_urls(max_pages):
     return all_urls
 
 def analyze_urls(margin_sec, summary_len):
+    ensure_directories()
     if not os.path.exists(URL_LIST_FILE):
         print(f"エラー: {URL_LIST_FILE} が見つかりません。")
         return
@@ -90,7 +104,8 @@ def analyze_urls(margin_sec, summary_len):
         df["ベストアンサーフラグ"] = 0
         
         final_now = datetime.now(jst)
-        file_path = f"chiebukuro_analysis_{final_now.strftime('%Y%m%d_%H%M%S')}.csv"
+        filename = f"chiebukuro_analysis_{final_now.strftime('%Y%m%d_%H%M%S')}.csv"
+        file_path = os.path.join(RAW_DIR, filename) # rawフォルダに保存
         df.to_csv(file_path, index=False, encoding="utf-8-sig")
         print(f"--- 解析完了: {file_path} ---")
         return df
@@ -160,7 +175,6 @@ def parse_detail_page(url, session, now_jst, summary_len, current_id):
                 elapsed = f"{h}時間{m}分" if h > 0 else f"{m}分"
                 pop = round(v_count / total_m, 3)
                 comp_rate = round((ans_count / v_count * 100), 2) if v_count > 0 else 0.0
-                # 回答難易度 (閲覧数 / 回答数)
                 ans_diff = round(v_count / ans_count, 1) if ans_count > 0 else float(v_count)
                 ratio = round(pop / comp_rate, 2) if comp_rate > 0 else 0.0
                 pot = round(((e_count * 100) + (ans_count * 50) + (all_reaction_total * 30) + v_count) / (total_m + 1), 2)
@@ -179,7 +193,6 @@ if __name__ == "__main__":
     import sys
     is_colab = 'google.colab' in sys.modules
     if is_colab:
-        print("【Google Colab】テスト実行")
         save_urls(max_pages=2)
         analyze_urls(margin_sec=1.0, summary_len=50)
     else:
